@@ -387,6 +387,3 @@ thing that made it meaningful: the condition it was taken in. Numbers belong in 
 prints and in the profile it saves, next to the device, the platform and the thermal state they were
 measured at. Run it on your own hardware.
 
-## 10. License
-
-MIT OR Apache-2.0, at your option.
