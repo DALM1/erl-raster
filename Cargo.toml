@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/erl-raster-core",
+    "crates/erl-render-backends",
+    "crates/erl-benchmark",
+    "crates/erl-adaptive-runtime",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DALM1/erl-raster"
+rust-version = "1.75"
+
+[workspace.dependencies]
+erl-raster-core = { path = "crates/erl-raster-core" }
+erl-render-backends = { path = "crates/erl-render-backends" }
+erl-benchmark = { path = "crates/erl-benchmark" }
+erl-adaptive-runtime = { path = "crates/erl-adaptive-runtime" }
+
+# The MVP deliberately has no third-party dependency. The core, the benchmark engine and the
+# dispatcher are pure `std`: it keeps the open-source build reproducible on any machine, it keeps the
+# frame path free of code that could pause it, and it keeps the surface small enough to be audited.
+# The GPU backend will bring in a window/GPU abstraction of its own, and it will be the only place
+# that does.
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+lto = true
+codegen-units = 1

@@ -1,0 +1,10 @@
+[package]
+name = "erl-raster-core"
+description = "Platform-independent rasterisation primitives and the deterministic reference path of ERL Raster."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]

@@ -1,0 +1,12 @@
+[package]
+name = "erl-benchmark"
+description = "Measurement engine for ERL Raster: two regimes, switch cost, persisted device profiles."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+erl-raster-core = { workspace = true }
+erl-render-backends = { workspace = true }

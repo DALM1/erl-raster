@@ -1,0 +1,19 @@
+[package]
+name = "erl-render-backends"
+description = "CPU and GPU implementations behind the ERL Raster backend contract."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+erl-raster-core = { workspace = true }
+
+# The single third-party dependency of the workspace, kept in the one crate the workspace comment
+# designates for it. `wgpu` is chosen over Metal and Vulkan written twice because the second platform
+# would otherwise be a second copy of every nuance, and the arbitrage the library exists to prove does
+# not get better for it. The feature set is narrowed to the platform this first backend targets: the
+# Vulkan feature joins when the Android adapter is written, and nothing needs Direct3D or a WebGL path
+# to be measured on a phone or a laptop.
+wgpu = { version = "24", default-features = false, features = ["metal", "wgsl"] }
