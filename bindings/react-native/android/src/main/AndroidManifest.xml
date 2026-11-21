@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A library module's manifest carries no package: the namespace in `build.gradle` is what AGP uses.
+  Nothing is declared here because the module adds no permission, no provider and no service - it is
+  a surface view and a native module, and both are reached through code the application already links.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

@@ -7,13 +7,33 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+# The graphics bridge is optional, and this is the switch that decides whether an artefact carries a
+# device stack at all. A build without it links the vectorised CPU path and nothing else: `wgpu`, its
+# loader and its shader front end all leave the artefact, which is the difference between a few
+# hundred kilobytes and several megabytes on a phone. The two builds produce byte-identical pixels,
+# because nothing in the CPU path refers to anything below this feature.
+gpu = ["dep:wgpu"]
+
 [dependencies]
 erl-raster-core = { workspace = true }
 
 # The single third-party dependency of the workspace, kept in the one crate the workspace comment
 # designates for it. `wgpu` is chosen over Metal and Vulkan written twice because the second platform
 # would otherwise be a second copy of every nuance, and the arbitrage the library exists to prove does
-# not get better for it. The feature set is narrowed to the platform this first backend targets: the
-# Vulkan feature joins when the Android adapter is written, and nothing needs Direct3D or a WebGL path
-# to be measured on a phone or a laptop.
-wgpu = { version = "24", default-features = false, features = ["metal", "wgsl"] }
+# not get better for it.
+#
+# The graphics API is selected per target rather than declared as a pair. The two features cannot
+# travel together: `wgpu`'s `metal` feature reaches a crate that builds only for Apple targets, so a
+# single dependency naming both would fail to compile on Android, and one naming neither would leave
+# the bridge with nothing to open. Each target therefore pulls exactly the API it can run, and no
+# target pulls Direct3D or a WebGL path, because nothing here is ever measured on one.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { version = "24", optional = true, default-features = false, features = ["metal", "wgsl"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# `vulkan-portability` is the name `wgpu` gives the feature that reaches `wgpu-core/vulkan`, and it is
+# a misnomer here: on macOS it exists to allow MoltenVK through, and on Android it is simply the
+# Vulkan backend, which is what this target runs natively. There is no second spelling of it, so the
+# name is written down rather than worked around.
+wgpu = { version = "24", optional = true, default-features = false, features = ["vulkan-portability", "wgsl"] }

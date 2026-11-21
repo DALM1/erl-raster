@@ -5,6 +5,7 @@ members = [
     "crates/erl-render-backends",
     "crates/erl-benchmark",
     "crates/erl-adaptive-runtime",
+    "crates/erl-raster-ffi",
 ]
 
 [workspace.package]
@@ -17,8 +18,12 @@ rust-version = "1.75"
 [workspace.dependencies]
 erl-raster-core = { path = "crates/erl-raster-core" }
 erl-render-backends = { path = "crates/erl-render-backends" }
-erl-benchmark = { path = "crates/erl-benchmark" }
+# Inherited without its default features, so a member that wants the profile format does not silently
+# drag a graphics stack into its own artefact. A member that does want the bridge asks for it, and the
+# bench, whose whole purpose is to measure the bridge, asks by default when it is built on its own.
+erl-benchmark = { path = "crates/erl-benchmark", default-features = false }
 erl-adaptive-runtime = { path = "crates/erl-adaptive-runtime" }
+erl-raster-ffi = { path = "crates/erl-raster-ffi" }
 
 # The MVP deliberately has no third-party dependency. The core, the benchmark engine and the
 # dispatcher are pure `std`: it keeps the open-source build reproducible on any machine, it keeps the

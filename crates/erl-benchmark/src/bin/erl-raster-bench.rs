@@ -36,9 +36,9 @@ use erl_raster_core::system::{SystemState, ThermalState};
 use erl_raster_core::workload::{published_workloads, Workload};
 use erl_render_backends::{default_registry, Backend, BackendId, GpuBackend, SwitchCostModel};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
 use erl_render_backends::registry_with_gpu;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 use std::process::Command;
 
 /// The usage line, printed on `--help` and on a malformed command.
@@ -159,29 +159,50 @@ fn run(options: &Options) -> Result<(), String> {
 fn pipelines() -> Vec<Box<dyn Backend>> {
     let mut backends = default_registry();
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(feature = "gpu", any(target_vendor = "apple", target_os = "android")))]
     {
-        match erl_render_backends::MetalBridge::create() {
+        match erl_render_backends::WgpuBridge::create() {
             Ok(bridge) => backends = registry_with_gpu(Box::new(bridge)),
             Err(error) => {
-                eprintln!("erl-raster-bench: the Metal bridge is not linked: {error}");
+                eprintln!("erl-raster-bench: the GPU bridge is not linked: {error}");
                 backends.push(Box::new(GpuBackend::absent(
-                    BackendId::GpuMetal,
-                    "the Metal device could not be opened on this machine",
+                    gpu_bridge_id(),
+                    "the graphics device could not be opened on this machine",
                 )));
             }
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(feature = "gpu", any(target_vendor = "apple", target_os = "android"))))]
     {
-        backends.push(Box::new(GpuBackend::absent(
-            BackendId::GpuMetal,
-            "no GPU bridge is compiled for this platform",
-        )));
+        backends.push(Box::new(GpuBackend::absent(gpu_bridge_id(), GPU_ABSENT_REASON)));
     }
 
     backends
+}
+
+/// Why the GPU entry is absent, when the build itself cannot carry one.
+#[cfg(not(all(feature = "gpu", any(target_vendor = "apple", target_os = "android"))))]
+const GPU_ABSENT_REASON: &str = if cfg!(feature = "gpu") {
+    "no GPU bridge is compiled for this platform"
+} else {
+    "this bench was built without the graphics bridge"
+};
+
+/// The identifier the GPU entry carries, whether or not a device opened.
+///
+/// It is the identifier the linked bridge would have reported, so a reader can compare a report from a
+/// machine whose driver refused the instance with one from a machine where it did not, and see the
+/// same name in the same place.
+fn gpu_bridge_id() -> BackendId {
+    #[cfg(target_os = "android")]
+    {
+        BackendId::GpuVulkan
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        BackendId::GpuMetal
+    }
 }
 
 /// The load the switch cost is measured on.
@@ -204,6 +225,16 @@ fn host_state(thermal: ThermalState) -> SystemState {
 
 /// The model of the machine, as the platform names it.
 fn host_device() -> String {
+    #[cfg(target_os = "android")]
+    if let Some(model) = android_property("ro.product.model") {
+        // The model alone ("Pixel 8") does not say which vendor built it, and two phones from
+        // different vendors can share a model name. The pair is what a reader needs to know which
+        // driver produced these numbers.
+        return match android_property("ro.product.manufacturer") {
+            Some(vendor) => format!("{vendor} {model}"),
+            None => model,
+        };
+    }
     #[cfg(target_os = "macos")]
     if let Some(model) = command_line("sysctl", &["-n", "hw.model"]) {
         return model;
@@ -220,6 +251,10 @@ fn host_device() -> String {
 
 /// The platform and its version.
 fn host_platform() -> String {
+    #[cfg(target_os = "android")]
+    if let Some(release) = android_property("ro.build.version.release") {
+        return format!("Android {release}");
+    }
     #[cfg(target_os = "macos")]
     if let Some(version) = command_line("sw_vers", &["-productVersion"]) {
         return format!("macOS {version}");
@@ -227,8 +262,18 @@ fn host_platform() -> String {
     format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// A system property, as the platform's own tool reports it.
+///
+/// Android has no file to read for these: they are held by the property service and reachable through
+/// `getprop`, which is why the absolute path is used. A process whose `PATH` omits the system binaries
+/// would otherwise find nothing and report `unknown` for a device it is running on.
+#[cfg(target_os = "android")]
+fn android_property(name: &str) -> Option<String> {
+    command_line("/system/bin/getprop", &[name])
+}
+
 /// The first line of a command's standard output, or `None` when it cannot be run or answers nothing.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 fn command_line(program: &str, arguments: &[&str]) -> Option<String> {
     let output = Command::new(program).args(arguments).output().ok()?;
     if !output.status.success() {

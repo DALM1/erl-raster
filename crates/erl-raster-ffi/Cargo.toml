@@ -1,0 +1,45 @@
+[package]
+name = "erl-raster-ffi"
+description = "The C ABI an application links against: one handle, host-memory targets, the arbitration behind it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+# The library a platform links is named for what it is, not for the crate that produces it, so the
+# Kotlin and Swift sides write `erl_raster` and find `liberl_raster.a` or `liberl_raster.so` where
+# they expect it. All three artefact kinds are built from one source: `lib` so the workspace can test
+# this crate directly, `staticlib` for iOS where a dynamic library would have to be signed and
+# embedded, and `cdylib` for Android where the loader expects one.
+name = "erl_raster"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[features]
+# The graphics bridge, on by default and off on request. An application that links this crate for the
+# vectorised CPU path alone turns it off and gets an artefact with no `wgpu`, no loader and no shader
+# front end in it. The ABI is unchanged either way: a build without the bridge still reports the GPU
+# entry in its pipeline list, marked absent, so a caller reads the same list and branches on the same
+# name whichever artefact it linked.
+#
+# The JNI entry points are on by default for the same reason: an Android application expects them to
+# be there, and they cost nothing on a platform that never loads them. They are what lets Kotlin reach
+# this artefact with no C++ in between and no CMake file in the application.
+default = ["gpu", "jni"]
+gpu = ["erl-render-backends/gpu"]
+jni = ["dep:jni-sys"]
+
+[dependencies]
+erl-raster-core = { workspace = true }
+erl-render-backends = { workspace = true }
+erl-benchmark = { workspace = true }
+erl-adaptive-runtime = { workspace = true }
+
+# The JNI function table, and nothing else: `jni-sys` is the raw set of types and function pointers the
+# virtual machine hands a native library, with no wrapper, no allocator and no dependency of its own.
+# The wrapper crate on top of it would bring a parser, an error type and a panic path we would then
+# have to keep out of a boundary that must not panic. The entry points below are written directly on
+# the table for that reason.
+[target.'cfg(target_os = "android")'.dependencies]
+jni-sys = { version = "0.3", optional = true }

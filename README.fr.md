@@ -10,16 +10,21 @@ aucun. Il rastérise des feuilles, mesure ce que cela coûte, et arbitre.
 Lire ce document dans une autre langue :
 [English](README.md) | [中文](README.zh-CN.md) | **Français** | [Español](README.es.md) | [Русский](README.ru.md)
 
+**Si vous êtes ici pour l'utiliser plutôt que pour le lire** : rendez-vous à la [section 7](#7-utiliser-la-bibliothèque-sans-lire-ce-qui-précède).
+C'est une page, elle ne présuppose rien, et elle représente tout ce qu'une application a à faire.
+
 - [1. Le problème que nous avons rencontré](#1-le-problème-que-nous-avons-rencontré)
 - [2. Ce qu'est ERL Raster, et ce qu'il refuse d'être](#2-ce-quest-erl-raster-et-ce-quil-refuse-dêtre)
 - [3. Les quatre pièges autour desquels la conception est bâtie](#3-les-quatre-pièges-autour-desquels-la-conception-est-bâtie)
 - [4. L'implémentation, crate par crate](#4-limplémentation-crate-par-crate)
 - [5. La charge publiée](#5-la-charge-publiée)
 - [6. Comment l'exécuter](#6-comment-lexécuter)
-- [7. Où en est le projet](#7-où-en-est-le-projet)
-- [8. Feuille de route](#8-feuille-de-route)
-- [9. Pourquoi il n'y a pas de chiffres dans ce fichier](#9-pourquoi-il-ny-a-pas-de-chiffres-dans-ce-fichier)
-- [10. Licence](#10-licence)
+- [7. Utiliser la bibliothèque sans lire ce qui précède](#7-utiliser-la-bibliothèque-sans-lire-ce-qui-précède)
+- [8. Ce que cela nous a fait économiser, sur notre propre écran](#8-ce-que-cela-nous-a-fait-économiser-sur-notre-propre-écran)
+- [9. Où en est le projet](#9-où-en-est-le-projet)
+- [10. Feuille de route](#10-feuille-de-route)
+- [11. Pourquoi chaque chiffre ici porte ses conditions](#11-pourquoi-chaque-chiffre-ici-porte-ses-conditions)
+- [12. Licence](#12-licence)
 
 ---
 
@@ -68,6 +73,11 @@ fausses de manières qui produisaient des chiffres assurés et inutiles :
 Le défaut de performance qui a tout déclenché est désormais compris et corrigé dans l'application
 elle-même. Ce qu'il a mis au jour, c'est la lacune que ce dépôt comble : l'arbitrage entre le CPU et le
 GPU est une décision que chaque pile de rendu prend, mal, à la main.
+
+Ainsi, la réponse que donne ce dépôt n'est pas un correctif à notre application. C'est une bibliothèque,
+et elle est destinée à être donnée : la section 7 est la porte d'une page pour qui veut seulement le
+bénéfice, et la section 8 est ce qu'elle nous a fait économiser, mesuré sur le téléphone que nous tenons
+en main plutôt que raisonné.
 
 ## 2. Ce qu'est ERL Raster, et ce qu'il refuse d'être
 
@@ -163,7 +173,7 @@ La solution n'est pas une meilleure boucle, ce sont deux mesures et une règle s
 
 ## 4. L'implémentation, crate par crate
 
-Le workspace compte quatre crates. Le MVP n'a **aucune dépendance tierce en dehors du pont GPU** : le
+Le workspace compte cinq crates. Le MVP n'a **aucune dépendance tierce en dehors du pont GPU** : le
 noyau, le benchmark et le répartiteur sont en `std` pur, ce qui garde la compilation open source
 reproductible sur n'importe quelle machine et garde le chemin de l'image exempt de code susceptible de
 le suspendre.
@@ -174,6 +184,7 @@ crates/
   erl-render-backends     les implémentations, derrière un seul contrat
   erl-benchmark           le moteur de mesure et le profil de l'appareil
   erl-adaptive-runtime    le répartiteur
+  erl-raster-ffi          l'ABI C, les points d'entrée JNI Android et le chemin d'affichage
 ```
 
 ### 4.1 `erl-raster-core`
@@ -236,9 +247,12 @@ Un contrat, plusieurs implémentations.
   backend GPU mesuré sur une texture qu'il possédait déjà afficherait un bien meilleur chiffre et
   décrirait une situation où l'appelant ne se trouve jamais. `GpuBackend::absent` existe pour qu'un
   rapport puisse dire *pourquoi* un GPU n'était pas candidat au lieu de l'omettre en silence.
-- `wgpu_bridge` est le premier vrai pont, compilé uniquement sur macOS. Quatre décisions le façonnent :
-  les noyaux sont des répartitions de calcul plutôt que des passes de rendu, parce qu'une séquence de
-  glyphes doit lire le pixel qu'elle s'apprête à mélanger et qu'une passe de rendu ne peut pas lire sa
+- `wgpu_bridge` est le vrai pont, compilé sur les cibles Apple et sur Android. Un seul module sert les
+  deux, parce que rien au-dessus du choix d'API ne diffère : seuls l'API que l'instance ouvre et
+  l'identifiant que l'appareil rapporte changent, et les deux vivent dans un petit module `platform`
+  pour qu'ils ne puissent pas diverger. Quatre décisions le façonnent : les noyaux sont des
+  répartitions de calcul plutôt que des passes de rendu, parce qu'une séquence de glyphes doit lire le
+  pixel qu'elle s'apprête à mélanger et qu'une passe de rendu ne peut pas lire sa
   propre attache ; tout est un tampon de stockage lu et écrit sur place plutôt qu'une texture, ce qui
   supprime une copie intermédiaire et une passe de suppression de foulée ; le `Work` rapporté est
   calculé sur l'hôte à partir de la même arithmétique de découpage que celle utilisée par la référence,
@@ -248,6 +262,18 @@ Un contrat, plusieurs implémentations.
 - `registry` est l'endroit où le piège de compatibilité atterrit. Aucune découverte, aucun sondage.
   `default_registry()` renvoie d'abord la référence scalaire puis la variante vectorisée quand
   l'architecture en possède une ; `registry_with_gpu` ajoute un pont lié.
+- `present` est le second pipeline GPU, délibérément plus étroit : le **chemin d'affichage sans copie**.
+  Le pont de calcul ne peut pas servir un écran, et structurellement : il dessine dans un tampon de
+  stockage, qui est la bonne cible pour la mesure et n'a aucune voie vers un affichage. Aussi `present`
+  fait-il le compromis inverse à dessein : une passe de rendu échantillonne une *texture* source vers le
+  swapchain, rien n'est relu, et le filtrage de l'échantillonneur est celui du pilote plutôt que celui
+  de la référence en entiers, ce qui explique pourquoi ce chemin n'est **pas** exact au bit près et
+  n'est **pas** proposé comme pipeline mesuré. C'est un chemin d'affichage. Trois règles lui donnent son
+  nom : un seul téléversement par source et un redessin n'en coûte aucun ; une seule texture par image,
+  quel que soit le nombre de vues qui la demandent, la seconde vue empruntant ce que la première a
+  téléversé et ne déplaçant rien ; et un seul appareil pour tout le processus, prêté à chaque vue, parce
+  que six vues construisant six appareils ont été mesurées à 744 ms et 91.9 MB de mémoire graphique pour
+  afficher une image six fois.
 
 ### 4.3 `erl-benchmark`
 
@@ -298,6 +324,33 @@ pipelines arrivent par le trait `Backend`.
   mesurées, et un déplacement non mesuré est refusé. Au plus un déplacement de performance par image. Le
   profil n'est utilisé que dans la condition dans laquelle il a été pris. Un runtime construit sans repli
   permanent est refusé à la construction plutôt que toléré.
+
+### 4.5 `erl-raster-ffi`
+
+La couture qui rend tout ce qui précède accessible depuis les langages qui détiennent réellement les
+pixels sur un téléphone. Tout ce qui se trouve sous cette crate est une bibliothèque Rust prenant des
+valeurs Rust ; une application ne le peut pas. Cette crate est l'ABI C sur laquelle Kotlin, Swift et
+Objective-C++ se lient, les points d'entrée JNI Android qui permettent à Java de l'appeler sans
+enveloppe, et l'ABI propre au chemin d'affichage. Elle porte **deux ABI**, et la séparation est
+délibérée :
+
+- **L'ABI mesurée**, dans `src/lib.rs` et `include/erl_raster.h`. Un seul handle opaque, aucun état
+  global, des tampons comme simples pointeurs vers du RGBA8 serré — ce qu'un `Bitmap` Android et un
+  `CGContext` iOS détiennent déjà — et un profil et un état thermique qui sont à la charge de l'appelant
+  plutôt qu'à celle de la bibliothèque de deviner. Chaque pointeur est vérifié et chaque échec revient
+  sous forme de code négatif, parce qu'une panique qui se propage dans Kotlin est un comportement
+  indéfini et qu'une bibliothèque dont le pire cas est « aussi vite que la référence » ne peut pas avoir
+  la panne pour pire cas.
+- **L'ABI d'affichage**, dans `src/view.rs` et `include/erl_raster_view.h`. La vue sans copie de la
+  section 4.2, exposée comme son propre en-tête. Elle diffère de l'ABI mesurée exactement de trois
+  façons : la fenêtre est un argument plutôt qu'un global, l'image est téléversée une fois puis plus
+  jamais, et le chemin n'est pas exact au bit près. Elle n'a pas d'arbitre, parce qu'une vue n'a rien à
+  arbitrer — elle présente une seule image, elle ne choisit pas un moteur pour un lot.
+
+Les deux en-têtes sont écrits à la main et tenus en phase avec la source Rust, qui fait autorité : si les
+deux venaient à diverger, c'est le Rust qui a raison. L'en-tête mesuré documente les codes partagés —
+`ERL_RASTER_OK` et ses trois échecs, les cinq états thermiques et les deux filtres — et l'en-tête de vue
+l'inclut plutôt que de le répéter.
 
 ## 5. La charge publiée
 
@@ -362,57 +415,171 @@ Un argument mal formé est une erreur, et non une valeur par défaut ignorée en
 rapport produit sous une configuration que personne n'a choisie est un rapport que personne ne peut
 interpréter.
 
-## 7. Où en est le projet
+Le banc mesure l'*arbitrage*. Le chemin d'affichage de la section 4.2 se mesure différemment, parce que
+ce qu'il économise est un déplacement d'octets plutôt qu'un choix entre moteurs : la vue écrit une ligne
+`uploaded {w}x{h}, {bytes} bytes` lorsqu'une image arrive et une ligne
+`borrowed {w}x{h} from the device, no bytes moved` par vue qui affiche ensuite la même image, et une
+ligne `drew {srcW}x{srcH} at {x},{y} as {dstW}x{dstH} in {µs}` par image. Ces lignes sont la mesure, et
+c'est ce que cite la section 8.
+
+## 7. Utiliser la bibliothèque sans lire ce qui précède
+
+Tout ce qui précède explique pourquoi la bibliothèque est façonnée comme elle l'est. Rien de tout cela
+n'est nécessaire pour l'*utiliser*, et c'est à dessein : les personnes qui devraient en bénéficier sont
+celles qui ne vont pas lire un document sur les régimes de cache d'abord.
+
+**Si vous écrivez une application React Native**, commencez ici :
+
+```
+bindings/react-native/README.md
+```
+
+Ce paquet est tout le chemin d'affichage, préparé et prêt. Il livre le module Kotlin, la vue native,
+l'objet `liberl_raster.so` pour l'ABI pour laquelle il a été publié, un `build.gradle` qui compile comme
+bibliothèque Android sans toucher au vôtre, un script qui compile le Rust de façon croisée si vous
+disposez d'une chaîne d'outils, et un README écrit pour quelqu'un qui n'a jamais entendu parler de ce
+dépôt. En bref : installez le paquet, ajoutez une ligne à la liste des paquets, montez `ErlRasterPhoto`
+là où vous montez une `Image`. Si l'objet n'a pas été livré pour un appareil donné, le composant se
+rabat sur un repli plutôt que de planter, et le reste de l'application n'est pas affecté.
+
+**Si vous écrivez une application native**, commencez par les deux en-têtes :
+
+```
+crates/erl-raster-ffi/include/erl_raster.h        the measured ABI: decode, resample, arbitrate
+crates/erl-raster-ffi/include/erl_raster_view.h   the display ABI: put a picture on a window
+```
+
+Ils sont en C, ils sont commentés, et ce sont les seuls fichiers dont un appelant Kotlin, Swift ou C++ a
+besoin. L'en-tête mesuré porte les codes d'erreur, les codes thermiques et les codes de filtre ;
+l'en-tête de vue l'inclut, si bien qu'un appelant qui ne fait que dessiner obtient tout de même les
+constantes partagées. Les deux en-têtes disent quel fichier Rust fait autorité s'ils venaient à diverger.
+
+Trois propriétés rendent l'adoption sûre quelle que soit la porte par laquelle vous êtes entré. La
+bibliothèque est une **API et jamais un crochet** : pas de swizzling, pas de remplacement de classe, rien
+dans le dos de la plateforme. La référence CPU est un **repli permanent**, jamais retiré, si bien que le
+pire cas d'adoption de la bibliothèque est qu'elle s'exécute exactement aussi vite qu'avant. Et un
+appareil dont l'ABI, l'état thermique ou le profil ne correspondent pas est signalé comme tel —
+`isErlRasterAvailableAsync` répond `available: false` avec la raison, et `erlRasterStatusAsync` signale
+le runtime comme non fiable — plutôt que d'être approximé en silence.
+
+## 8. Ce que cela nous a fait économiser, sur notre propre écran
+
+Chaque chiffre ci-dessous a été produit par le harnais de ce dépôt, sur l'appareil nommé à côté, à l'état
+thermique nommé à côté, le 21 novembre 2026. La section 11 explique pourquoi les conditions voyagent avec
+les chiffres plutôt que de figurer dans une note de bas de page.
+
+**Le cas.** Une liste de tuiles affichant la même image. C'est la forme que produisent une conversation,
+une grille d'avatars et une vue d'album, et c'est le cas pour lequel la bibliothèque a été construite.
+
+**L'appareil.** Samsung SM-G980F (`x1seea`, Galaxy S20), Android 13, Mali-G77, 1080×2400 à la densité
+2.625, `Thermal Status: 0` (35.8 °C au début de l'exécution, et toujours 0 à la fin de celle-ci).
+
+**L'image.** Une image RGBA8 de 876×445 embarquée, conservée en mémoire native par le moteur après
+`decodeErlRasterImageAsync`. Soit 876×445×4 = **1 559 280 octets** de pixels, et c'est la seule chose qui
+doit traverser le bus.
+
+| Quoi | Sans partage | Avec partage | Différence |
+|---|---|---|---|
+| Vues affichant une image | 6 | 6 | — |
+| Téléversements de l'image | 6 | 1 | — |
+| Octets déplacés vers le GPU | 9 355 680 | 1 559 280 | **7 796 400 économisés (83.3 %)** |
+| Copies de l'image détenues sur l'appareil | 6 | 1 | 5 |
+
+Le propre journal de la vue indique `uploaded 876x445, 1559280 bytes` une fois, puis cinq fois
+`borrowed 876x445 from the device, no bytes moved`. Six surfaces ont été créées pour les six vues, et
+l'exécution entière a construit un seul appareil GPU, et non six.
+
+**Par image, une fois l'image sur l'appareil, rien ne bouge du tout.** La sonde a fait basculer
+l'échantillonneur quarante fois, ce qui redessinait les six vues à chaque fois ; avec les six images de
+montage et les deux tuiles de composant à côté, l'exécution a écrit exactement **248 lignes `drew` et pas
+une seule n'a déplacé le moindre octet**. L'appel présent lui-même — acquisition du swapchain, passe de
+rendu et soumission, chronométré à l'intérieur de la bibliothèque — est ressorti à :
+
+| Présents | Le plus rapide | Médiane | Quatre-vingt-quinzième | Le plus lent |
+|---|---|---|---|---|
+| 248 | 545 µs | 1 512 µs | 3 398 µs | 11 300 µs |
+
+Les entrées lentes sont les images dans lesquelles plusieurs surfaces dessinaient au même instant, ce que
+la sonde produit à dessein en faisant basculer un seul état que six vues lisent. Le plancher, 545 µs, est
+ce que coûte un présent unique. Une image à 60 Hz fait 16 700 µs, si bien que le chemin d'affichage
+laisse à l'arbitrage et au reste de l'image leur budget ; ce qu'il coûte, c'est le trafic, et le trafic
+est nul.
+
+**Sur une photographie pleine grandeur, l'écart est encore plus grand.** La même photographie passée par
+le chemin mesuré — téléversement, dessin, téléchargement — a coûté 48 771 072 octets, parce qu'une image
+de 4032×3024 est téléversée et téléchargée en entier. La vue déplace 24 385 536 de ces octets une fois,
+lorsque l'image arrive, et plus jamais tant qu'elle est à l'écran : **la moitié du trafic, pour les mêmes
+pixels, et une seule fois au lieu de chaque dessin.** Redimensionner ou recadrer une image que la vue
+détient déjà n'en déplace aucun.
+
+**Et ce n'est pas seulement le bus.** La première forme de la vue construisait un appareil GPU par vue,
+ce qui a été mesuré, non raisonné : six vues ont coûté six constructions d'appareil de 59 à 222 ms
+chacune — 744 ms avant que la première image n'apparaisse —, six copies de la même image téléversées, et
+91.9 MB de mémoire graphique pour afficher une image six fois. Un seul appareil pour le processus, prêté
+à chaque vue, a supprimé les trois, et les six vues ci-dessus le partagent.
+
+## 9. Où en est le projet
 
 Terminé et vérifié :
 
-- Le workspace Rust, quatre crates, contrats stabilisés, `cargo test --workspace` au vert.
+- Le workspace Rust, cinq crates, contrats stabilisés, `cargo test --workspace` au vert.
 - Le backend CPU complet : référence scalaire et ligne de composition vectorisée sur AArch64, produisant
   tous deux des octets identiques.
 - La référence déterministe en entiers uniquement à laquelle les autres backends sont tenus.
 - L'ensemble de charges publié, sans ressource.
 - Le banc comparatif avec les deux régimes, le harnais entrelacé, le préchauffage écarté, les coûts de
   basculement mesurés et le profil d'appareil versionné.
-- Le premier pont GPU, sur macOS via Metal. Il reproduit la référence scalaire sur l'ensemble publié,
-  vérifié par test.
+- Le pont GPU, sur macOS via Metal et sur Android via Vulkan. Les deux reproduisent la référence scalaire
+  sur l'ensemble publié, vérifié par test.
 - Le runtime adaptatif : hystérésis, le budget d'un déplacement par image, les fenêtres critiques, le
   refus des bascules non mesurées, le repli jamais retiré et le contrôle thermique sur le profil.
+- L'ABI C, avec l'en-tête mesuré et l'en-tête de vue, et les points d'entrée JNI Android qui permettent à
+  Kotlin de l'atteindre directement.
+- Le chemin d'affichage sans copie sur Android : un seul appareil pour le processus, un seul
+  téléversement par image, une seule texture par image quel que soit le nombre de vues qui la demandent,
+  et un redessin qui ne déplace aucun octet.
+- La liaison React Native, publiée comme bibliothèque Android autonome avec l'objet préparé, afin qu'une
+  application puisse adopter le chemin d'affichage sans lire ce fichier.
 
 Pas encore :
 
-- Le pont Android. C'est le second adaptateur derrière la même couture `GpuSurfaceBridge`, avec sa propre
-  porte de plateforme.
-- L'intégration applicative : une liaison JSI et TurboModule générée à partir des mêmes définitions
-  d'interface, et la vue hôte, afin qu'un composant React Native puisse remettre un lot au runtime.
-- Le chemin sans copie : `IOSurface` sur iOS et `AHardwareBuffer` sur Android, pour lequel la couture a
-  déjà été façonnée. C'est une variante du pipeline à mesurer, et non quelque chose glissé dans la base
-  de référence.
+- L'adaptateur iOS. Le présenteur est écrit contre un `CAMetalLayer` et l'ABI de vue est neutre vis-à-vis
+  de la plateforme, si bien que ce qui manque, c'est le Swift et l'Objective-C++ qui lui passent une
+  couche.
 - Un exécuteur de tests de conformité qui compare chaque backend à la référence sur tout l'ensemble
   publié, avec les tolérances déclarées comme données plutôt que comme tests.
 - Une intégration continue qui compile le workspace pour `aarch64-apple-ios` et `aarch64-linux-android`.
+- Le benchmark embarqué, limité par un quota : celui qui s'exécute sur l'appareil d'un utilisateur,
+  démarre après la première image, et qui rend l'arbitre utile sur du matériel que nous n'avons jamais
+  vu.
 
-## 8. Feuille de route
+## 10. Feuille de route
 
-1. Le pont Android Vulkan, derrière la couture existante.
+1. L'adaptateur iOS, derrière l'ABI de vue qui existe déjà.
 2. L'exécuteur de conformité, et la table de tolérances comme données.
-3. La vue hôte React Native et sa liaison.
-4. Le benchmark embarqué, limité par un quota, qui démarre *après* la première image et jamais avant,
+3. Le benchmark embarqué, limité par un quota, qui démarre *après* la première image et jamais avant,
    afin qu'une première session ne soit jamais retardée par sa mesure.
-5. Des essais multi-résolution et sous charge, y compris une charge concurrente simulée sur le GPU, afin
+4. Des essais multi-résolution et sous charge, y compris une charge concurrente simulée sur le GPU, afin
    que le piège 3.3 soit provoqué à dessein au lieu d'être attendu.
-6. Les variantes sans copie, mesurées en tant que variantes.
-7. Une lecture publiée de la latence, de la fluidité et de l'énergie, face à une exécution sans la
+5. Une lecture publiée de la latence, de la fluidité et de l'énergie, face à une exécution sans la
    bibliothèque.
 
-## 9. Pourquoi il n'y a pas de chiffres dans ce fichier
+## 11. Pourquoi chaque chiffre ici porte ses conditions
 
 Parce qu'une durée prise sur un téléphone chaud décrit un téléphone chaud. La règle du projet est
-qu'aucune mesure n'est valide au-dessus de la pression thermique nominale, et un chiffre recopié dans un
-README perd la seule chose qui le rendait significatif : la condition dans laquelle il a été pris. Les
-chiffres appartiennent au rapport que le banc imprime et au profil qu'il enregistre, à côté de l'appareil,
-de la plateforme et de l'état thermique dans lesquels ils ont été mesurés. Exécutez-le sur votre propre
-matériel.
+qu'aucune mesure absolue n'est valide au-dessus de la pression thermique nominale, et un chiffre recopié
+dans un README perd la seule chose qui le rendait significatif : la condition dans laquelle il a été
+pris. Aussi les chiffres de la section 8 sont-ils imprimés avec l'appareil, la plateforme et l'état
+thermique dans lesquels ils ont été pris, et chacun d'eux peut être reproduit sur le même téléphone : le
+banc de la section 6 réimprime les chiffres d'arbitrage, et la vue écrit elle-même ceux du chemin
+d'affichage, sous forme d'`uploaded` une fois puis de `borrowed` pour chaque vue qui suit.
 
-## 10. Licence
+Deux sortes de chiffre sont délibérément tenues à part. Une valeur d'**octets** est un fait structurel :
+six vues d'une même image soit la téléversent six fois, soit une seule, et aucun état thermique ne change
+cela. Une **durée** n'en est pas un : elle bouge avec l'horloge, la température et tout ce que l'appareil
+fait par ailleurs. Les comptes d'octets de la section 8 tiennent partout ; les temps d'image ne tiennent
+que là où ils ont été pris, et ils sont imprimés à côté de ce lieu pour que personne n'ait à deviner.
 
-MIT OR Apache-2.0, au choix.
+## 12. Licence
+
+MIT OR Apache-2.0, au choix. Voir [LICENSE-MIT](LICENSE-MIT) et [LICENSE-APACHE](LICENSE-APACHE).

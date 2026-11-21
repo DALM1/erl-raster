@@ -1,0 +1,66 @@
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+// The Android half of the React Native binding.
+//
+// Three things are worth knowing before reading it.
+//
+// **The Java package is `com.erl.mobile`, and it is fixed.** The native library is reached through JNI
+// entry points whose names are derived from it (`Java_com_erl_mobile_ErlRasterNative_decodeImage` and
+// the rest), so the package cannot be renamed without regenerating the native side. Renaming it is a
+// change to `crates/erl-raster-ffi/src/jni.rs`, not to this module.
+//
+// **The Android namespace is `com.erl.raster`, and it is not.** The namespace is only where AGP puts
+// the generated `R` and `BuildConfig` classes. Keeping it distinct means an application whose own
+// namespace is `com.erl.mobile` can depend on this module without the two colliding.
+//
+// **The shared object is staged, not compiled here.** There is no C++ in this project, so the Android
+// plugin's native build has nothing to do; `cargo ndk` produces the object and drops it in
+// `android/src/main/jniLibs/<abi>/`, which AGP already scans. A consumer who has no Rust toolchain
+// ships the object that was staged for it, which is the intent: the library is usable without the
+// toolchain that produced it.
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+android {
+  namespace 'com.erl.raster'
+  compileSdk safeExtGet('compileSdkVersion', 35)
+
+  defaultConfig {
+    minSdk safeExtGet('minSdkVersion', 24)
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = '17'
+  }
+
+  buildFeatures {
+    buildConfig false
+  }
+
+  // The staged objects are the whole of the native side of this module. Nothing is stripped or
+  // packaged twice: `src/main/jniLibs` is where AGP already looks.
+  sourceSets {
+    main {
+      jniLibs.srcDirs = ['src/main/jniLibs']
+    }
+  }
+}
+
+dependencies {
+  // The React Native Android artefacts come from the application that consumes this module, which is
+  // why no version is pinned here: pinning one would fight the application's own resolution.
+  implementation 'com.facebook.react:react-android'
+
+  // The engine decodes through `BitmapFactory`, which reads pixels and nothing else. A photograph
+  // taken in portrait is stored landscape and carries its rotation in the EXIF header, and the header
+  // is what has to be read for the decoded pixels to come out the way the camera showed them.
+  implementation 'androidx.exifinterface:exifinterface:1.4.1'
+}

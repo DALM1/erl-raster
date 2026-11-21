@@ -18,18 +18,32 @@ pub mod gpu;
 pub mod neon;
 pub mod registry;
 
-// The first real GPU bridge, and the only one whose backend is compiled into this build. It is gated
-// by platform because `wgpu`'s `metal` feature exists only under `target_vendor = "apple"`, and
-// because `Instance::new` panics when the running platform has no compiled backend. The Android
-// adapter will arrive as its own module with its own gate.
-#[cfg(target_os = "macos")]
+// The one real GPU bridge, and the only module in the workspace whose graphics API is compiled in. It
+// is gated by platform because `wgpu`'s `metal` feature exists only under `target_vendor = "apple"`,
+// because its `vulkan` backend exists only where a loader does, and because `Instance::new` panics when
+// the running platform has no compiled backend. It is gated by feature as well, so a build that links
+// only the vectorised CPU path keeps the graphics stack out of the artefact entirely. One module
+// serves both platforms: nothing above the API choice differs, so the kernels, the seam and the
+// measurement rule cannot drift apart between them. What does change lives in the bridge's own
+// `platform` module, namely the API the instance opens and the identifier the device reports.
+#[cfg(all(feature = "gpu", any(target_vendor = "apple", target_os = "android")))]
 pub mod wgpu_bridge;
+
+// The display path, as opposed to the measured one. It shares the instance the bridge opens but none
+// of its kernels, because the two want opposite things from the same device: the bridge wants bytes it
+// can compare, the presenter wants pixels it can show without ever reading them back. Gated exactly as
+// the bridge is, for the same reason — it compiles a graphics API, and only the two platforms that
+// document their window handles are served.
+#[cfg(all(feature = "gpu", any(target_vendor = "apple", target_os = "android")))]
+pub mod present;
 
 pub use contract::{
     Backend, BackendId, Capabilities, CostModel, DeviceClass, Executed, SwitchCostModel,
 };
 pub use cpu::CpuBackend;
 pub use gpu::{GpuBackend, GpuDeviceInfo, GpuSurfaceBridge};
+#[cfg(all(feature = "gpu", any(target_vendor = "apple", target_os = "android")))]
+pub use present::{PresentFilter, Presented, Presenter, WindowHandle};
 pub use registry::{default_registry, registry_with_gpu};
-#[cfg(target_os = "macos")]
-pub use wgpu_bridge::MetalBridge;
+#[cfg(all(feature = "gpu", any(target_vendor = "apple", target_os = "android")))]
+pub use wgpu_bridge::WgpuBridge;

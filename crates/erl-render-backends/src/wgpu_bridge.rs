@@ -1,4 +1,4 @@
-//! The Metal bridge: the first real implementation behind [`GpuSurfaceBridge`].
+//! The `wgpu` bridge: the implementation behind [`GpuSurfaceBridge`].
 //!
 //! Four decisions shape this file, and each of them was taken against a cheaper alternative.
 //!
@@ -29,11 +29,13 @@
 //! and `transferred_bytes` counts them. A backend that rendered into a texture it already owned would
 //! post a far better number and describe a situation the caller is never in.
 //!
-//! The module is compiled only on macOS. It has to be: `wgpu`'s `metal` feature exists only under
-//! `target_vendor = "apple"`, and `Instance::new` panics when no compiled backend is available for the
-//! running platform. Gating the module rather than the call sites keeps a Linux or Android build from
-//! even parsing an API that cannot exist there; the Android adapter will arrive as its own module with
-//! its own gate.
+//! The module is compiled on Apple targets and on Android, and nowhere else. It has to be gated: the
+//! `metal` feature exists only under `target_vendor = "apple"`, the `vulkan` backend only where a
+//! loader does, and `Instance::new` panics when no compiled backend is available for the running
+//! platform. One module serves both platforms because nothing above the API choice differs: the
+//! kernels, the seam and the measurement rule are the same integer arithmetic over the same buffers.
+//! What does differ is the API the instance opens and the identifier the device reports, and both live
+//! in [`platform`] below, so the two cannot drift apart in anything that is measured.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -45,10 +47,58 @@ use erl_raster_core::image::{Surface, CHANNELS, MAX_DIMENSION, MAX_SURFACE_BYTES
 use erl_raster_core::op::{Batch, Op, Work};
 use erl_raster_core::{RasterError, Result};
 
-use crate::contract::{BackendId, Executed};
+use crate::contract::Executed;
 use crate::gpu::{GpuDeviceInfo, GpuSurfaceBridge};
 
-/// The label every device object carries, so a Metal capture is readable.
+/// Everything that differs between the two platforms this bridge runs on.
+///
+/// It is a module of constants rather than a pair of `cfg` branches at each call site, because the
+/// whole point of one bridge is that only four things change. Scattering them would let the two
+/// platforms acquire different kernels or a different measurement rule without anyone noticing, which
+/// is precisely the failure the second platform is most exposed to.
+///
+/// The reasons are `&'static str` because [`RasterError::BackendUnavailable`] stores one, and a
+/// `format!` would have to allocate on a path that is allowed to fail but never allowed to be slow.
+pub(crate) mod platform {
+    use crate::contract::BackendId;
+
+    /// The APIs the instance is allowed to enumerate. Naming one rather than `Backends::all()` matters:
+    /// `all()` on a machine with a partial loader can pick a backend that exists and cannot be driven,
+    /// and the failure would surface later as an empty adapter list with no explanation.
+    #[cfg(target_vendor = "apple")]
+    pub const BACKENDS: wgpu::Backends = wgpu::Backends::METAL;
+    #[cfg(target_os = "android")]
+    pub const BACKENDS: wgpu::Backends = wgpu::Backends::VULKAN;
+
+    /// The identifier the linked device reports to the dispatcher.
+    #[cfg(target_vendor = "apple")]
+    pub const ID: BackendId = BackendId::GpuMetal;
+    #[cfg(target_os = "android")]
+    pub const ID: BackendId = BackendId::GpuVulkan;
+
+    /// What the device is called when the driver does not name it.
+    #[cfg(target_vendor = "apple")]
+    pub const ANONYMOUS_DEVICE: &str = "Metal device";
+    #[cfg(target_os = "android")]
+    pub const ANONYMOUS_DEVICE: &str = "Vulkan device";
+
+    #[cfg(target_vendor = "apple")]
+    pub const NO_ADAPTER: &str = "no Metal adapter was found on this machine";
+    #[cfg(target_os = "android")]
+    pub const NO_ADAPTER: &str = "no Vulkan adapter was found on this machine";
+
+    #[cfg(target_vendor = "apple")]
+    pub const REQUEST_UNRESOLVED: &str = "the Metal device request did not resolve";
+    #[cfg(target_os = "android")]
+    pub const REQUEST_UNRESOLVED: &str = "the Vulkan device request did not resolve";
+
+    #[cfg(target_vendor = "apple")]
+    pub const DEVICE_UNCREATED: &str = "the Metal device could not be created";
+    #[cfg(target_os = "android")]
+    pub const DEVICE_UNCREATED: &str = "the Vulkan device could not be created";
+}
+
+/// The label every device object carries, so a graphics capture is readable.
 const LABEL: &str = "erl-raster";
 
 /// How many invocations a compute workgroup holds on each axis.
@@ -459,13 +509,13 @@ impl core::fmt::Debug for Prepared {
     }
 }
 
-/// The Metal implementation of [`GpuSurfaceBridge`].
+/// The `wgpu` implementation of [`GpuSurfaceBridge`], on whichever API this platform offers.
 ///
-/// The pipelines are built in [`MetalBridge::create`] rather than in `prepare`, because shader
+/// The pipelines are built in [`WgpuBridge::create`] rather than in `prepare`, because shader
 /// compilation is the single largest startup cost a GPU backend has and it does not depend on the
 /// batch. `prepare` then only allocates and fills buffers, which is what the seam says it is for.
 #[derive(Debug)]
-pub struct MetalBridge {
+pub struct WgpuBridge {
     device: wgpu::Device,
     queue: wgpu::Queue,
     info: GpuDeviceInfo,
@@ -481,25 +531,27 @@ pub struct MetalBridge {
     prepared: Option<Prepared>,
 }
 
-impl MetalBridge {
-    /// Opens the first Metal adapter this machine offers and links it.
+impl WgpuBridge {
+    /// Opens the first adapter this machine offers on this platform's API and links it.
     ///
-    /// Returns an error rather than panicking when there is no adapter: a Mac without a Metal device is
-    /// not a normal machine, but a process running under an unusual sandbox is, and the caller's
-    /// correct response is the one the registry already defines, namely to fall back to the CPU.
+    /// Returns an error rather than panicking when there is no adapter. A machine without a graphics
+    /// device is not a normal machine, but a process running inside a sandbox that hides it is: an
+    /// Android application on a device whose driver refused the instance, an emulator without a
+    /// Vulkan loader, a Mac in an unusual entitlement. The caller's correct response is the one the
+    /// registry already defines, namely to fall back to the CPU reference.
     pub fn create() -> Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
+            backends: platform::BACKENDS,
             ..Default::default()
         });
 
         let adapter = instance
-            .enumerate_adapters(wgpu::Backends::METAL)
+            .enumerate_adapters(platform::BACKENDS)
             .into_iter()
             .next()
             .ok_or(RasterError::BackendUnavailable {
-                backend: BackendId::GpuMetal.as_str(),
-                reason: "no Metal adapter was found on this machine",
+                backend: platform::ID.as_str(),
+                reason: platform::NO_ADAPTER,
             })?;
 
         let descriptor = wgpu::DeviceDescriptor {
@@ -514,13 +566,13 @@ impl MetalBridge {
         // executor is needed, which is why the workspace does not carry one.
         let requested = resolve(adapter.request_device(&descriptor, None)).ok_or(
             RasterError::BackendUnavailable {
-                backend: BackendId::GpuMetal.as_str(),
-                reason: "the Metal device request did not resolve",
+                backend: platform::ID.as_str(),
+                reason: platform::REQUEST_UNRESOLVED,
             },
         )?;
         let (device, queue) = requested.map_err(|_| RasterError::BackendUnavailable {
-            backend: BackendId::GpuMetal.as_str(),
-            reason: "the Metal device could not be created",
+            backend: platform::ID.as_str(),
+            reason: platform::DEVICE_UNCREATED,
         })?;
 
         let adapter_info = adapter.get_info();
@@ -531,9 +583,9 @@ impl MetalBridge {
             .min(MAX_SURFACE_BYTES);
 
         let info = GpuDeviceInfo {
-            id: BackendId::GpuMetal,
+            id: platform::ID,
             name: if adapter_info.name.is_empty() {
-                "Metal device".to_string()
+                platform::ANONYMOUS_DEVICE.to_string()
             } else {
                 adapter_info.name.clone()
             },
@@ -626,7 +678,7 @@ impl MetalBridge {
     }
 }
 
-impl GpuSurfaceBridge for MetalBridge {
+impl GpuSurfaceBridge for WgpuBridge {
     fn device(&self) -> &GpuDeviceInfo {
         &self.info
     }
@@ -819,7 +871,7 @@ impl GpuSurfaceBridge for MetalBridge {
     }
 }
 
-impl MetalBridge {
+impl WgpuBridge {
     /// Builds the bind group and the uniform a single operation needs.
     ///
     /// `target` is the buffer every kernel reads and writes at binding zero. It is passed in rather
@@ -1332,7 +1384,7 @@ fn report_work(target: Size, batch: &Batch) -> Result<Work> {
 /// The workspace carries no async runtime, and this is the only future it ever has to drive. Writing a
 /// no-op waker out of `std::task::Wake` keeps this safe: the alternative is a hand-rolled `RawWaker`
 /// vtable, which is three unsafe functions to express "nobody needs to be woken".
-fn resolve<F: core::future::Future>(future: F) -> Option<F::Output> {
+pub(crate) fn resolve<F: core::future::Future>(future: F) -> Option<F::Output> {
     use core::task::{Context, Poll, Waker};
 
     struct Noop;
@@ -1362,17 +1414,17 @@ mod tests {
     use crate::contract::Backend;
     use crate::cpu::CpuBackend;
 
-    /// Opens the bridge, or returns `None` when this machine has no Metal adapter.
+    /// Opens the bridge, or returns `None` when this machine has no adapter on this platform's API.
     ///
     /// A test that cannot run should say so by returning, not by failing: a build machine without a
     /// GPU is a configuration, not a regression, and the CPU conformance tests already cover the
     /// reference. The moment an adapter exists, every assertion below is mandatory.
-    fn bridge() -> Option<MetalBridge> {
-        MetalBridge::create().ok()
+    fn bridge() -> Option<WgpuBridge> {
+        WgpuBridge::create().ok()
     }
 
     #[test]
-    fn the_metal_pipeline_reproduces_the_scalar_reference() {
+    fn the_linked_pipeline_reproduces_the_scalar_reference() {
         // The claim the whole design rests on, and the reason the kernels are integer-only. If this
         // ever fails, the device is not `bit_exact` and the conformance rule has to become a written
         // tolerance before the backend serves a frame, not after.
@@ -1406,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn the_metal_pipeline_reports_the_work_the_reference_reports() {
+    fn the_linked_pipeline_reports_the_work_the_reference_reports() {
         let Some(bridge) = bridge() else {
             return;
         };
@@ -1426,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn the_metal_pipeline_reproduces_the_reference_where_the_published_set_does_not_look() {
+    fn the_linked_pipeline_reproduces_the_reference_where_the_published_set_does_not_look() {
         // The published set exercises the bilinear filter and rectangles that land inside the target.
         // Two live paths in the kernels sit outside it: the nearest filter, and an operation whose
         // rectangle clips away to nothing. A path that has never run is not a path known to be exact,

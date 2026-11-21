@@ -7,6 +7,14 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+# The bench is the tool that measures the graphics bridge, so it carries one by default: asking it to
+# compare pipelines while refusing it the pipeline it is meant to compare against would be a strange
+# request. The feature is declared so the artefact can be built without a graphics stack at all, which
+# is what a caller that only wants the profile format out of this crate needs.
+default = ["gpu"]
+gpu = ["erl-render-backends/gpu"]
+
 [dependencies]
 erl-raster-core = { workspace = true }
 erl-render-backends = { workspace = true }

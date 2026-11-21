@@ -1,0 +1,38 @@
+{
+  "name": "erl-raster-react-native",
+  "version": "0.1.0",
+  "description": "The zero-copy display path and the raster module of the ERL Raster engine, as React Native components.",
+  "license": "MIT OR Apache-2.0",
+  "author": "Dimitri Almon aka 玄一 aka DALM1",
+  "homepage": "https://github.com/DALM1/erl-raster",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DALM1/erl-raster.git",
+    "directory": "bindings/react-native"
+  },
+  "main": "index.js",
+  "bin": {
+    "erl-raster-build-android": "scripts/build-android.sh"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "android",
+    "erl_raster.h",
+    "erl_raster_view.h",
+    "README.md"
+  ],
+  "keywords": [
+    "react-native",
+    "android",
+    "raster",
+    "rendering",
+    "zero-copy",
+    "image",
+    "surface"
+  ],
+  "peerDependencies": {
+    "react": ">=17.0.0",
+    "react-native": ">=0.71.0"
+  }
+}
